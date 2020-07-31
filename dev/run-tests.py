@@ -42,15 +42,20 @@ def determine_modules_for_files(filenames):
     """
     Given a list of filenames, return the set of modules that contain those files.
     If a file is not associated with a more specific submodule, then this method will consider that
-    file to belong to the 'root' module.
+    file to belong to the 'root' module. GitHub Action and Appveyor files are ignored.
 
     >>> sorted(x.name for x in determine_modules_for_files(["python/pyspark/a.py", "sql/core/foo"]))
     ['pyspark-core', 'sql']
     >>> [x.name for x in determine_modules_for_files(["file_not_matched_by_any_subproject"])]
     ['root']
+    >>> [x.name for x in determine_modules_for_files( \
+            [".github/workflows/master.yml", "appveyor.yml"])]
+    []
     """
     changed_modules = set()
     for filename in filenames:
+        if filename in (".github/workflows/master.yml", "appveyor.yml"):
+            continue
         matched_at_least_one_module = False
         for module in modules.all_modules:
             if module.contains_file(filename):
@@ -249,15 +254,6 @@ def get_zinc_port():
     return random.randrange(3030, 4030)
 
 
-def kill_zinc_on_port(zinc_port):
-    """
-    Kill the Zinc process running on the given port, if one exists.
-    """
-    cmd = "%s -P |grep %s | grep LISTEN | awk '{ print $2; }' | xargs kill"
-    lsof_exe = which("lsof")
-    subprocess.check_call(cmd % (lsof_exe if lsof_exe else "/usr/sbin/lsof", zinc_port), shell=True)
-
-
 def exec_maven(mvn_args=()):
     """Will call Maven in the current directory with the list of mvn_args passed
     in and returns the subprocess for any further processing"""
@@ -267,7 +263,6 @@ def exec_maven(mvn_args=()):
     zinc_flag = "-DzincPort=%s" % zinc_port
     flags = [os.path.join(SPARK_HOME, "build", "mvn"), "--force", zinc_flag]
     run_cmd(flags + mvn_args)
-    kill_zinc_on_port(zinc_port)
 
 
 def exec_sbt(sbt_args=()):

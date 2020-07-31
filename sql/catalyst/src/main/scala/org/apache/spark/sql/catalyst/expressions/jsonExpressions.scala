@@ -472,11 +472,6 @@ case class JsonTuple(children: Seq[Expression])
     parser.getCurrentToken match {
       // if the user requests a string field it needs to be returned without enclosing
       // quotes which is accomplished via JsonGenerator.writeRaw instead of JsonGenerator.write
-      case JsonToken.VALUE_STRING if parser.hasTextCharacters =>
-        // slight optimization to avoid allocating a String instance, though the characters
-        // still have to be decoded... Jackson doesn't have a way to access the raw bytes
-        generator.writeRaw(parser.getTextCharacters, parser.getTextOffset, parser.getTextLength)
-
       case JsonToken.VALUE_STRING =>
         // the normal String case, pass it through to the output without enclosing quotes
         generator.writeRaw(parser.getText)
@@ -744,14 +739,27 @@ case class StructsToJson(
   """,
   since = "2.4.0")
 case class SchemaOfJson(child: Expression)
-  extends UnaryExpression with String2StringExpression with CodegenFallback {
+  extends UnaryExpression with CodegenFallback {
+
+  override def dataType: DataType = StringType
+
+  override def nullable: Boolean = false
 
   private val jsonOptions = new JSONOptions(Map.empty, "UTC")
   private val jsonFactory = new JsonFactory()
   jsonOptions.setJacksonOptions(jsonFactory)
 
-  override def convert(v: UTF8String): UTF8String = {
-    val dt = Utils.tryWithResource(CreateJacksonParser.utf8String(jsonFactory, v)) { parser =>
+  @transient
+  private lazy val json = child.eval().asInstanceOf[UTF8String]
+
+  override def checkInputDataTypes(): TypeCheckResult = child match {
+    case Literal(s, StringType) if s != null => super.checkInputDataTypes()
+    case _ => TypeCheckResult.TypeCheckFailure(
+      s"The input json should be a string literal and not null; however, got ${child.sql}.")
+  }
+
+  override def eval(v: InternalRow): Any = {
+    val dt = Utils.tryWithResource(CreateJacksonParser.utf8String(jsonFactory, json)) { parser =>
       parser.nextToken()
       inferField(parser, jsonOptions)
     }
@@ -765,7 +773,7 @@ object JsonExprUtils {
   def evalSchemaExpr(exp: Expression): DataType = exp match {
     case Literal(s, StringType) => DataType.fromDDL(s.toString)
     case e @ SchemaOfJson(_: Literal) =>
-      val ddlSchema = e.eval().asInstanceOf[UTF8String]
+      val ddlSchema = e.eval(EmptyRow).asInstanceOf[UTF8String]
       DataType.fromDDL(ddlSchema.toString)
     case e => throw new AnalysisException(
       "Schema should be specified in DDL format as a string literal" +

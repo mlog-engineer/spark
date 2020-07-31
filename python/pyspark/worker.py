@@ -22,7 +22,12 @@ from __future__ import print_function
 import os
 import sys
 import time
-import resource
+# 'resource' is a Unix specific module.
+has_resource_module = True
+try:
+    import resource
+except ImportError:
+    has_resource_module = False
 import socket
 import traceback
 
@@ -256,7 +261,7 @@ def main(infile, outfile):
         version = utf8_deserializer.loads(infile)
         if version != "%d.%d" % sys.version_info[:2]:
             raise Exception(("Python in worker has different version %s than that in " +
-                             "driver %s, PySpark cannot run with different minor versions." +
+                             "driver %s, PySpark cannot run with different minor versions. " +
                              "Please check environment variables PYSPARK_PYTHON and " +
                              "PYSPARK_DRIVER_PYTHON are correctly set.") %
                             ("%d.%d" % sys.version_info[:2], version))
@@ -268,9 +273,9 @@ def main(infile, outfile):
 
         # set up memory limits
         memory_limit_mb = int(os.environ.get('PYSPARK_EXECUTOR_MEMORY_MB', "-1"))
-        total_memory = resource.RLIMIT_AS
-        try:
-            if memory_limit_mb > 0:
+        if memory_limit_mb > 0 and has_resource_module:
+            total_memory = resource.RLIMIT_AS
+            try:
                 (soft_limit, hard_limit) = resource.getrlimit(total_memory)
                 msg = "Current mem limits: {0} of max {1}\n".format(soft_limit, hard_limit)
                 print(msg, file=sys.stderr)
@@ -283,9 +288,9 @@ def main(infile, outfile):
                     print(msg, file=sys.stderr)
                     resource.setrlimit(total_memory, (new_limit, new_limit))
 
-        except (resource.error, OSError, ValueError) as e:
-            # not all systems support resource limits, so warn instead of failing
-            print("WARN: Failed to set memory limit: {0}\n".format(e), file=sys.stderr)
+            except (resource.error, OSError, ValueError) as e:
+                # not all systems support resource limits, so warn instead of failing
+                print("WARN: Failed to set memory limit: {0}\n".format(e), file=sys.stderr)
 
         # initialize global state
         taskContext = None

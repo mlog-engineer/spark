@@ -145,7 +145,7 @@ PYDOCKERFILE=
 RDOCKERFILE=
 NOCACHEARG=
 BUILD_PARAMS=
-while getopts f:p:R:mr:t:n:b: option
+while getopts f:p:R:mr:t:nb: option
 do
  case "${option}"
  in
@@ -160,7 +160,7 @@ do
    if ! which minikube 1>/dev/null; then
      error "Cannot find minikube."
    fi
-   eval $(minikube docker-env)
+   eval $(minikube docker-env --shell bash)
    ;;
  esac
 done

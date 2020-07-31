@@ -1547,6 +1547,45 @@ class DatasetSuite extends QueryTest with SharedSQLContext {
       df.where($"city".contains(new java.lang.Character('A'))),
       Seq(Row("Amsterdam")))
   }
+
+  test("SPARK-26233: serializer should enforce decimal precision and scale") {
+    val s = StructType(Seq(StructField("a", StringType), StructField("b", DecimalType(38, 8))))
+    val encoder = RowEncoder(s)
+    implicit val uEnc = encoder
+    val df = spark.range(2).map(l => Row(l.toString, BigDecimal.valueOf(l + 0.1111)))
+    checkAnswer(df.groupBy(col("a")).agg(first(col("b"))),
+      Seq(Row("0", BigDecimal.valueOf(0.1111)), Row("1", BigDecimal.valueOf(1.1111))))
+  }
+
+  test("SPARK-26366: return nulls which are not filtered in except") {
+    val inputDF = sqlContext.createDataFrame(
+      sparkContext.parallelize(Seq(Row("0", "a"), Row("1", null))),
+      StructType(Seq(
+        StructField("a", StringType, nullable = true),
+        StructField("b", StringType, nullable = true))))
+
+    val exceptDF = inputDF.filter(col("a").isin("0") or col("b") > "c")
+    checkAnswer(inputDF.except(exceptDF), Seq(Row("1", null)))
+  }
+
+  test("SPARK-26706: Fix Cast.mayTruncate for bytes") {
+    val thrownException = intercept[AnalysisException] {
+      spark.range(Long.MaxValue - 10, Long.MaxValue).as[Byte]
+        .map(b => b - 1)
+        .collect()
+    }
+    assert(thrownException.message.contains("Cannot up cast `id` from bigint to tinyint"))
+  }
+
+  test("SPARK-31854: Invoke in MapElementsExec should not propagate null") {
+    Seq("true", "false").foreach { wholeStage =>
+      withSQLConf(SQLConf.WHOLESTAGE_CODEGEN_ENABLED.key -> wholeStage) {
+        val ds = Seq(1.asInstanceOf[Integer], null.asInstanceOf[Integer]).toDS()
+        val expectedAnswer = Seq[(Integer, Integer)]((1, 1), (null, null))
+        checkDataset(ds.map(v => (v, v)), expectedAnswer: _*)
+      }
+    }
+  }
 }
 
 case class TestDataUnion(x: Int, y: Int, z: Int)

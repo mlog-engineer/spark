@@ -341,174 +341,6 @@ case class MapValues(child: Expression)
 }
 
 /**
- * Returns an unordered array of all entries in the given map.
- */
-@ExpressionDescription(
-  usage = "_FUNC_(map) - Returns an unordered array of all entries in the given map.",
-  examples = """
-    Examples:
-      > SELECT _FUNC_(map(1, 'a', 2, 'b'));
-       [{"key":1,"value":"a"},{"key":2,"value":"b"}]
-  """,
-  since = "2.4.0")
-case class MapEntries(child: Expression) extends UnaryExpression with ExpectsInputTypes {
-
-  override def inputTypes: Seq[AbstractDataType] = Seq(MapType)
-
-  @transient private lazy val childDataType: MapType = child.dataType.asInstanceOf[MapType]
-
-  override def dataType: DataType = {
-    ArrayType(
-      StructType(
-        StructField("key", childDataType.keyType, false) ::
-        StructField("value", childDataType.valueType, childDataType.valueContainsNull) ::
-        Nil),
-      false)
-  }
-
-  override protected def nullSafeEval(input: Any): Any = {
-    val childMap = input.asInstanceOf[MapData]
-    val keys = childMap.keyArray()
-    val values = childMap.valueArray()
-    val length = childMap.numElements()
-    val resultData = new Array[AnyRef](length)
-    var i = 0
-    while (i < length) {
-      val key = keys.get(i, childDataType.keyType)
-      val value = values.get(i, childDataType.valueType)
-      val row = new GenericInternalRow(Array[Any](key, value))
-      resultData.update(i, row)
-      i += 1
-    }
-    new GenericArrayData(resultData)
-  }
-
-  override protected def doGenCode(ctx: CodegenContext, ev: ExprCode): ExprCode = {
-    nullSafeCodeGen(ctx, ev, c => {
-      val arrayData = ctx.freshName("arrayData")
-      val numElements = ctx.freshName("numElements")
-      val keys = ctx.freshName("keys")
-      val values = ctx.freshName("values")
-      val isKeyPrimitive = CodeGenerator.isPrimitiveType(childDataType.keyType)
-      val isValuePrimitive = CodeGenerator.isPrimitiveType(childDataType.valueType)
-
-      val wordSize = UnsafeRow.WORD_SIZE
-      val structSize = UnsafeRow.calculateBitSetWidthInBytes(2) + wordSize * 2
-      val (isPrimitive, elementSize) = if (isKeyPrimitive && isValuePrimitive) {
-        (true, structSize + wordSize)
-      } else {
-        (false, -1)
-      }
-
-      val allocation =
-        s"""
-           |ArrayData $arrayData = ArrayData.allocateArrayData(
-           |  $elementSize, $numElements, " $prettyName failed.");
-         """.stripMargin
-
-      val code = if (isPrimitive) {
-        val genCodeForPrimitive = genCodeForPrimitiveElements(
-          ctx, arrayData, keys, values, ev.value, numElements, structSize)
-        s"""
-           |if ($arrayData instanceof UnsafeArrayData) {
-           |  $genCodeForPrimitive
-           |} else {
-           |  ${genCodeForAnyElements(ctx, arrayData, keys, values, ev.value, numElements)}
-           |}
-         """.stripMargin
-      } else {
-        s"${genCodeForAnyElements(ctx, arrayData, keys, values, ev.value, numElements)}"
-      }
-
-      s"""
-         |final int $numElements = $c.numElements();
-         |final ArrayData $keys = $c.keyArray();
-         |final ArrayData $values = $c.valueArray();
-         |$allocation
-         |$code
-       """.stripMargin
-    })
-  }
-
-  private def getKey(varName: String, index: String) =
-    CodeGenerator.getValue(varName, childDataType.keyType, index)
-
-  private def getValue(varName: String, index: String) =
-    CodeGenerator.getValue(varName, childDataType.valueType, index)
-
-  private def genCodeForPrimitiveElements(
-      ctx: CodegenContext,
-      arrayData: String,
-      keys: String,
-      values: String,
-      resultArrayData: String,
-      numElements: String,
-      structSize: Int): String = {
-    val unsafeArrayData = ctx.freshName("unsafeArrayData")
-    val baseObject = ctx.freshName("baseObject")
-    val unsafeRow = ctx.freshName("unsafeRow")
-    val structsOffset = ctx.freshName("structsOffset")
-    val offset = ctx.freshName("offset")
-    val z = ctx.freshName("z")
-    val calculateHeader = "UnsafeArrayData.calculateHeaderPortionInBytes"
-
-    val baseOffset = Platform.BYTE_ARRAY_OFFSET
-    val wordSize = UnsafeRow.WORD_SIZE
-    val structSizeAsLong = s"${structSize}L"
-
-    val setKey = CodeGenerator.setColumn(unsafeRow, childDataType.keyType, 0, getKey(keys, z))
-
-    val valueAssignmentChecked = CodeGenerator.createArrayAssignment(
-      unsafeRow, childDataType.valueType, values, "1", z, childDataType.valueContainsNull)
-
-    s"""
-       |UnsafeArrayData $unsafeArrayData = (UnsafeArrayData)$arrayData;
-       |Object $baseObject = $unsafeArrayData.getBaseObject();
-       |final int $structsOffset = $calculateHeader($numElements) + $numElements * $wordSize;
-       |UnsafeRow $unsafeRow = new UnsafeRow(2);
-       |for (int $z = 0; $z < $numElements; $z++) {
-       |  long $offset = $structsOffset + $z * $structSizeAsLong;
-       |  $unsafeArrayData.setLong($z, ($offset << 32) + $structSizeAsLong);
-       |  $unsafeRow.pointTo($baseObject, $baseOffset + $offset, $structSize);
-       |  $setKey;
-       |  $valueAssignmentChecked
-       |}
-       |$resultArrayData = $arrayData;
-     """.stripMargin
-  }
-
-  private def genCodeForAnyElements(
-      ctx: CodegenContext,
-      arrayData: String,
-      keys: String,
-      values: String,
-      resultArrayData: String,
-      numElements: String): String = {
-    val z = ctx.freshName("z")
-    val isValuePrimitive = CodeGenerator.isPrimitiveType(childDataType.valueType)
-    val getValueWithCheck = if (childDataType.valueContainsNull && isValuePrimitive) {
-      s"$values.isNullAt($z) ? null : (Object)${getValue(values, z)}"
-    } else {
-      getValue(values, z)
-    }
-
-    val rowClass = classOf[GenericInternalRow].getName
-    val genericArrayDataClass = classOf[GenericArrayData].getName
-    val genericArrayData = ctx.freshName("genericArrayData")
-    val rowObject = s"new $rowClass(new Object[]{${getKey(keys, z)}, $getValueWithCheck})"
-    s"""
-       |$genericArrayDataClass $genericArrayData = ($genericArrayDataClass)$arrayData;
-       |for (int $z = 0; $z < $numElements; $z++) {
-       |  $genericArrayData.update($z, $rowObject);
-       |}
-       |$resultArrayData = $arrayData;
-     """.stripMargin
-  }
-
-  override def prettyName: String = "map_entries"
-}
-
-/**
  * Returns the union of all the given maps.
  */
 @ExpressionDescription(
@@ -834,7 +666,7 @@ case class MapFromEntries(child: Expression) extends UnaryExpression {
     val keyArrayData = ctx.freshName("keyArrayData")
     val valueArrayData = ctx.freshName("valueArrayData")
 
-    val baseOffset = Platform.BYTE_ARRAY_OFFSET
+    val baseOffset = "Platform.BYTE_ARRAY_OFFSET"
     val keySize = dataType.keyType.defaultSize
     val valueSize = dataType.valueType.defaultSize
     val kByteSize = s"UnsafeArrayData.calculateSizeOfUnderlyingByteArray($numEntries, $keySize)"
@@ -864,8 +696,8 @@ case class MapFromEntries(child: Expression) extends UnaryExpression {
        |  final byte[] $data = new byte[(int)$byteArraySize];
        |  UnsafeMapData $unsafeMapData = new UnsafeMapData();
        |  Platform.putLong($data, $baseOffset, $keySectionSize);
-       |  Platform.putLong($data, ${baseOffset + 8}, $numEntries);
-       |  Platform.putLong($data, ${baseOffset + 8} + $keySectionSize, $numEntries);
+       |  Platform.putLong($data, $baseOffset + 8, $numEntries);
+       |  Platform.putLong($data, $baseOffset + 8 + $keySectionSize, $numEntries);
        |  $unsafeMapData.pointTo($data, $baseOffset, (int)$byteArraySize);
        |  ArrayData $keyArrayData = $unsafeMapData.keyArray();
        |  ArrayData $valueArrayData = $unsafeMapData.valueArray();
@@ -1639,7 +1471,7 @@ case class ArraysOverlap(left: Expression, right: Expression)
  */
 // scalastyle:off line.size.limit
 @ExpressionDescription(
-  usage = "_FUNC_(x, start, length) - Subsets array x starting from index start (or starting from the end if start is negative) with the specified length.",
+  usage = "_FUNC_(x, start, length) - Subsets array x starting from index start (array indices start at 1, or starting from the end if start is negative) with the specified length.",
   examples = """
     Examples:
       > SELECT _FUNC_(array(1, 2, 3, 4), 2, 2);
@@ -2839,7 +2671,7 @@ object Sequence {
         val maxEstimatedArrayLength =
           getSequenceLength(startMicros, stopMicros, intervalStepInMicros)
 
-        val stepSign = if (stopMicros > startMicros) +1 else -1
+        val stepSign = if (stopMicros >= startMicros) +1 else -1
         val exclusiveItem = stopMicros + stepSign
         val arr = new Array[T](maxEstimatedArrayLength)
         var t = startMicros
@@ -2902,7 +2734,7 @@ object Sequence {
          |
          |  $sequenceLengthCode
          |
-         |  final int $stepSign = $stopMicros > $startMicros ? +1 : -1;
+         |  final int $stepSign = $stopMicros >= $startMicros ? +1 : -1;
          |  final long $exclusiveItem = $stopMicros + $stepSign;
          |
          |  $arr = new $elemType[$arrLength];
@@ -3319,29 +3151,29 @@ case class ArrayDistinct(child: Expression)
     (data: Array[AnyRef]) => new GenericArrayData(data.distinct.asInstanceOf[Array[Any]])
   } else {
     (data: Array[AnyRef]) => {
-      var foundNullElement = false
-      var pos = 0
+      val arrayBuffer = new scala.collection.mutable.ArrayBuffer[AnyRef]
+      var alreadyStoredNull = false
       for (i <- 0 until data.length) {
-        if (data(i) == null) {
-          if (!foundNullElement) {
-            foundNullElement = true
-            pos = pos + 1
+        if (data(i) != null) {
+          var found = false
+          var j = 0
+          while (!found && j < arrayBuffer.size) {
+            val va = arrayBuffer(j)
+            found = (va != null) && ordering.equiv(va, data(i))
+            j += 1
+          }
+          if (!found) {
+            arrayBuffer += data(i)
           }
         } else {
-          var j = 0
-          var done = false
-          while (j <= i && !done) {
-            if (data(j) != null && ordering.equiv(data(j), data(i))) {
-              done = true
-            }
-            j = j + 1
-          }
-          if (i == j - 1) {
-            pos = pos + 1
+          // De-duplicate the null values.
+          if (!alreadyStoredNull) {
+            arrayBuffer += data(i)
+            alreadyStoredNull = true
           }
         }
       }
-      new GenericArrayData(data.slice(0, pos))
+      new GenericArrayData(arrayBuffer)
     }
   }
 

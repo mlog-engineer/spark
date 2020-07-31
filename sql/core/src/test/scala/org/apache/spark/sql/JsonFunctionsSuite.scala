@@ -391,7 +391,7 @@ class JsonFunctionsSuite extends QueryTest with SharedSQLContext {
 
   test("SPARK-24709: infers schemas of json strings and pass them to from_json") {
     val in = Seq("""{"a": [1, 2, 3]}""").toDS()
-    val out = in.select(from_json('value, schema_of_json(lit("""{"a": [1]}"""))) as "parsed")
+    val out = in.select(from_json('value, schema_of_json("""{"a": [1]}""")) as "parsed")
     val expected = StructType(StructField(
       "parsed",
       StructType(StructField(
@@ -517,5 +517,32 @@ class JsonFunctionsSuite extends QueryTest with SharedSQLContext {
     checkAnswer(
       jsonDF.select(to_json(from_json($"a", schema))),
       Seq(Row(json)))
+  }
+
+  test("from_json - timestamp in micros") {
+    val df = Seq("""{"time": "1970-01-01T00:00:00.123456"}""").toDS()
+    val schema = new StructType().add("time", TimestampType)
+    val options = Map("timestampFormat" -> "yyyy-MM-dd'T'HH:mm:ss.SSSSSS")
+
+    checkAnswer(
+      df.select(from_json($"value", schema, options)),
+      Row(Row(java.sql.Timestamp.valueOf("1970-01-01 00:00:00.123456"))))
+  }
+
+  test("to_json - timestamp in micros") {
+    val s = "2019-11-18 11:56:00.123456"
+    val df = Seq(java.sql.Timestamp.valueOf(s)).toDF("t").select(
+      to_json(struct($"t"), Map("timestampFormat" -> "yyyy-MM-dd HH:mm:ss.SSSSSS")))
+    checkAnswer(df, Row(s"""{"t":"$s"}"""))
+  }
+
+  test("json_tuple - do not truncate results") {
+    val len = 2800
+    val str = Array.tabulate(len)(_ => "a").mkString
+    val json_tuple_result = Seq(s"""{"test":"$str"}""").toDF("json")
+      .withColumn("result", json_tuple('json, "test"))
+      .select('result)
+      .as[String].head.length
+    assert(json_tuple_result === len)
   }
 }

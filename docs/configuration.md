@@ -80,7 +80,7 @@ Then, you can supply configuration values at runtime:
 
 The Spark shell and [`spark-submit`](submitting-applications.html)
 tool support two ways to load configurations dynamically. The first is command line options,
-such as `--master`, as shown above. `spark-submit` can accept any Spark property using the `--conf`
+such as `--master`, as shown above. `spark-submit` can accept any Spark property using the `--conf/-c`
 flag, but uses special flags for properties that play a part in launching the Spark application.
 Running `./bin/spark-submit --help` will show the entire list of these options.
 
@@ -190,6 +190,8 @@ of the most common options to set are:
     and it is up to the application to avoid exceeding the overhead memory space
     shared with other non-JVM processes. When PySpark is run in YARN or Kubernetes, this memory
     is added to executor resource requests.
+
+    NOTE: Python memory usage may not be limited on platforms that do not support resource limiting, such as Windows.
   </td>
 </tr>
 <tr>
@@ -445,7 +447,7 @@ Apart from these, the following properties are also available, and may be useful
   <td>
     The directory which is used to dump the profile result before driver exiting.
     The results will be dumped as separated file for each RDD. They can be loaded
-    by ptats.Stats(). If this is specified, the profile result will not be displayed
+    by <code>pstats.Stats()</code>. If this is specified, the profile result will not be displayed
     automatically.
   </td>
 </tr>
@@ -528,7 +530,7 @@ Apart from these, the following properties are also available, and may be useful
     option <code>--repositories</code> or <code>spark.jars.repositories</code> will also be included.
     Useful for allowing Spark to resolve artifacts from behind a firewall e.g. via an in-house
     artifact server like Artifactory. Details on the settings file format can be
-    found at http://ant.apache.org/ivy/history/latest-milestone/settings.html
+    found at <a href="http://ant.apache.org/ivy/history/latest-milestone/settings.html">Settings Files</a>
   </td>
 </tr>
  <tr>
@@ -824,6 +826,14 @@ Apart from these, the following properties are also available, and may be useful
   </td>
 </tr>
 <tr>
+  <td><code>spark.ui.liveUpdate.minFlushPeriod</code></td>
+  <td>1s</td>
+  <td>
+    Minimum time elapsed before stale UI data is flushed. This avoids UI staleness when incoming
+    task events are not fired frequently.
+  </td>
+</tr>
+<tr>
   <td><code>spark.ui.port</code></td>
   <td>4040</td>
   <td>
@@ -850,7 +860,7 @@ Apart from these, the following properties are also available, and may be useful
   <td><code>spark.ui.retainedTasks</code></td>
   <td>100000</td>
   <td>
-    How many tasks the Spark UI and status APIs remember before garbage collecting.
+    How many tasks in one stage the Spark UI and status APIs remember before garbage collecting.
     This is a target maximum, and fewer elements may be retained in some circumstances.
   </td>
 </tr>
@@ -870,11 +880,13 @@ Apart from these, the following properties are also available, and may be useful
 </tr>
 <tr>
   <td><code>spark.ui.showConsoleProgress</code></td>
-  <td>true</td>
+  <td>false</td>
   <td>
     Show the progress bar in the console. The progress bar shows the progress of stages
     that run for longer than 500ms. If multiple stages run at the same time, multiple
     progress bars will be displayed on the same line.
+    <br/>
+    <em>Note:</em> In shell environment, the default value of spark.ui.showConsoleProgress is true.
   </td>
 </tr>
 <tr>
@@ -929,6 +941,14 @@ Apart from these, the following properties are also available, and may be useful
     <br /><code>spark.com.test.filter1.param.name2=bar</code>
   </td>
 </tr>
+<tr>
+  <td><code>spark.ui.requestHeaderSize</code></td>
+  <td>8k</td>
+  <td>
+    The maximum allowed size for a HTTP request header, in bytes unless otherwise specified.
+    This setting applies for the Spark History Server too.
+  </td>
+</tr>
 </table>
 
 ### Compression and Serialization
@@ -942,6 +962,14 @@ Apart from these, the following properties are also available, and may be useful
     Whether to compress broadcast variables before sending them. Generally a good idea.
     Compression will use <code>spark.io.compression.codec</code>.
   </td>
+</tr>
+<tr>
+  <td><code>spark.checkpoint.compress</code></td>
+  <td>false</td>
+  <td>
+    Whether to compress RDD checkpoints. Generally a good idea.
+    Compression will use <code>spark.io.compression.codec</code>.
+   </td>
 </tr>
 <tr>
   <td><code>spark.io.compression.codec</code></td>
@@ -1597,6 +1625,14 @@ Apart from these, the following properties are also available, and may be useful
     Capacity for event queue in Spark listener bus, must be greater than 0. Consider increasing
     value (e.g. 20000) if listener events are dropped. Increasing this value may result in the
     driver using more memory.
+  </td>
+</tr>
+<tr>
+  <td><code>spark.scheduler.blacklist.unschedulableTaskSetTimeout</code></td>
+  <td>120s</td>
+  <td>
+    The timeout in seconds to wait to acquire a new executor and schedule a task before aborting a
+    TaskSet which is unschedulable because of being completely blacklisted.
   </td>
 </tr>
 <tr>

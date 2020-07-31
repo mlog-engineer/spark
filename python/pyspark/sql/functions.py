@@ -25,9 +25,12 @@ import warnings
 if sys.version < "3":
     from itertools import imap as map
 
+if sys.version >= '3':
+    basestring = str
+
 from pyspark import since, SparkContext
 from pyspark.rdd import ignore_unicode_prefix, PythonEvalType
-from pyspark.sql.column import Column, _to_java_column, _to_seq
+from pyspark.sql.column import Column, _to_java_column, _to_seq, _create_column_from_literal
 from pyspark.sql.dataframe import DataFrame
 from pyspark.sql.types import StringType, DataType
 # Keep UserDefinedFunction import for backwards compatible import; moved in SPARK-22409
@@ -171,14 +174,14 @@ _collect_set_doc = """
     """
 _functions_1_6 = {
     # unary math functions
-    'stddev': 'Aggregate function: returns the unbiased sample standard deviation of' +
-              ' the expression in a group.',
+    'stddev': 'Aggregate function: alias for stddev_samp.',
     'stddev_samp': 'Aggregate function: returns the unbiased sample standard deviation of' +
                    ' the expression in a group.',
     'stddev_pop': 'Aggregate function: returns population standard deviation of' +
                   ' the expression in a group.',
-    'variance': 'Aggregate function: returns the population variance of the values in a group.',
-    'var_samp': 'Aggregate function: returns the unbiased variance of the values in a group.',
+    'variance': 'Aggregate function: alias for var_samp.',
+    'var_samp': 'Aggregate function: returns the unbiased sample variance of' +
+                ' the values in a group.',
     'var_pop':  'Aggregate function: returns the population variance of the values in a group.',
     'skewness': 'Aggregate function: returns the skewness of the values in a group.',
     'kurtosis': 'Aggregate function: returns the kurtosis of the values in a group.',
@@ -550,7 +553,7 @@ def nanvl(col1, col2):
 @since(1.4)
 def rand(seed=None):
     """Generates a random column with independent and identically distributed (i.i.d.) samples
-    from U[0.0, 1.0].
+    uniformly distributed in [0.0, 1.0).
 
     .. note:: The function is non-deterministic in general case.
 
@@ -853,36 +856,6 @@ def ntile(n):
     """
     sc = SparkContext._active_spark_context
     return Column(sc._jvm.functions.ntile(int(n)))
-
-
-@since(2.4)
-def unboundedPreceding():
-    """
-    Window function: returns the special frame boundary that represents the first row
-    in the window partition.
-    """
-    sc = SparkContext._active_spark_context
-    return Column(sc._jvm.functions.unboundedPreceding())
-
-
-@since(2.4)
-def unboundedFollowing():
-    """
-    Window function: returns the special frame boundary that represents the last row
-    in the window partition.
-    """
-    sc = SparkContext._active_spark_context
-    return Column(sc._jvm.functions.unboundedFollowing())
-
-
-@since(2.4)
-def currentRow():
-    """
-    Window function: returns the special frame boundary that represents the current row
-    in the window partition.
-    """
-    sc = SparkContext._active_spark_context
-    return Column(sc._jvm.functions.currentRow())
 
 
 # ---------------------- Date/Timestamp functions ------------------------------
@@ -1548,8 +1521,9 @@ def format_string(format, *cols):
     """
     Formats the arguments in printf-style and returns the result as a string column.
 
-    :param col: the column name of the numeric value to be formatted
-    :param d: the N decimal places
+    :param format: string that can contain embedded format tags and used as result column's value
+    :param cols: list of column names (string) or list of :class:`Column` expressions to
+        be used in formatting
 
     >>> df = spark.createDataFrame([(5, "hello")], ['a', 'b'])
     >>> df.select(format_string('%d %s', df.a, df.b).alias('v')).collect()
@@ -1933,7 +1907,12 @@ def arrays_overlap(a1, a2):
 def slice(x, start, length):
     """
     Collection function: returns an array containing  all the elements in `x` from index `start`
-    (or starting from the end if `start` is negative) with the specified `length`.
+    (array indices start at 1, or from the end if `start` is negative) with the specified `length`.
+
+    :param x: the array to be sliced
+    :param start: the starting index
+    :param length: the length of the slice
+
     >>> df = spark.createDataFrame([([1, 2, 3],), ([4, 5],)], ['x'])
     >>> df.select(slice(df.x, 2, 2).alias("sliced")).collect()
     [Row(sliced=[2, 3]), Row(sliced=[5])]
@@ -2016,11 +1995,12 @@ def element_at(col, extraction):
     [Row(element_at(data, 1)=u'a'), Row(element_at(data, 1)=None)]
 
     >>> df = spark.createDataFrame([({"a": 1.0, "b": 2.0},), ({},)], ['data'])
-    >>> df.select(element_at(df.data, "a")).collect()
+    >>> df.select(element_at(df.data, lit("a"))).collect()
     [Row(element_at(data, a)=1.0), Row(element_at(data, a)=None)]
     """
     sc = SparkContext._active_spark_context
-    return Column(sc._jvm.functions.element_at(_to_java_column(col), extraction))
+    return Column(sc._jvm.functions.element_at(
+        _to_java_column(col), lit(extraction)._jc))  # noqa: F821 'lit' is dynamically defined.
 
 
 @since(2.4)
@@ -2346,23 +2326,25 @@ def to_json(col, options={}):
 
 @ignore_unicode_prefix
 @since(2.4)
-def schema_of_json(col):
+def schema_of_json(json):
     """
-    Parses a column containing a JSON string and infers its schema in DDL format.
+    Parses a JSON string and infers its schema in DDL format.
 
-    :param col: string column in json format
+    :param json: a JSON string or a string literal containing a JSON string.
 
-    >>> from pyspark.sql.types import *
-    >>> data = [(1, '{"a": 1}')]
-    >>> df = spark.createDataFrame(data, ("key", "value"))
-    >>> df.select(schema_of_json(df.value).alias("json")).collect()
-    [Row(json=u'struct<a:bigint>')]
-    >>> df.select(schema_of_json(lit('{"a": 0}')).alias("json")).collect()
+    >>> df = spark.range(1)
+    >>> df.select(schema_of_json('{"a": 0}').alias("json")).collect()
     [Row(json=u'struct<a:bigint>')]
     """
+    if isinstance(json, basestring):
+        col = _create_column_from_literal(json)
+    elif isinstance(json, Column):
+        col = _to_java_column(json)
+    else:
+        raise TypeError("schema argument should be a column or string")
 
     sc = SparkContext._active_spark_context
-    jc = sc._jvm.functions.schema_of_json(_to_java_column(col))
+    jc = sc._jvm.functions.schema_of_json(col)
     return Column(jc)
 
 
@@ -2538,26 +2520,6 @@ def map_values(col):
     """
     sc = SparkContext._active_spark_context
     return Column(sc._jvm.functions.map_values(_to_java_column(col)))
-
-
-@since(2.4)
-def map_entries(col):
-    """
-    Collection function: Returns an unordered array of all entries in the given map.
-
-    :param col: name of column or expression
-
-    >>> from pyspark.sql.functions import map_entries
-    >>> df = spark.sql("SELECT map(1, 'a', 2, 'b') as data")
-    >>> df.select(map_entries("data").alias("entries")).show()
-    +----------------+
-    |         entries|
-    +----------------+
-    |[[1, a], [2, b]]|
-    +----------------+
-    """
-    sc = SparkContext._active_spark_context
-    return Column(sc._jvm.functions.map_entries(_to_java_column(col)))
 
 
 @since(2.4)

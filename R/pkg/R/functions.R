@@ -219,7 +219,7 @@ NULL
 #' head(select(tmp, sort_array(tmp$v1)))
 #' head(select(tmp, sort_array(tmp$v1, asc = FALSE)))
 #' tmp3 <- mutate(df, v3 = create_map(df$model, df$cyl))
-#' head(select(tmp3, map_entries(tmp3$v3), map_keys(tmp3$v3), map_values(tmp3$v3)))
+#' head(select(tmp3, map_keys(tmp3$v3), map_values(tmp3$v3)))
 #' head(select(tmp3, element_at(tmp3$v3, "Valiant")))
 #' tmp4 <- mutate(df, v4 = create_array(df$mpg, df$cyl), v5 = create_array(df$cyl, df$hp))
 #' head(select(tmp4, concat(tmp4$v4, tmp4$v5), arrays_overlap(tmp4$v4, tmp4$v5)))
@@ -2614,7 +2614,7 @@ setMethod("lpad", signature(x = "Column", len = "numeric", pad = "character"),
 
 #' @details
 #' \code{rand}: Generates a random column with independent and identically distributed (i.i.d.)
-#' samples from U[0.0, 1.0].
+#' samples uniformly distributed in [0.0, 1.0).
 #' Note: the function is non-deterministic in general case.
 #'
 #' @rdname column_nonaggregate_functions
@@ -3253,19 +3253,6 @@ setMethod("flatten",
           })
 
 #' @details
-#' \code{map_entries}: Returns an unordered array of all entries in the given map.
-#'
-#' @rdname column_collection_functions
-#' @aliases map_entries map_entries,Column-method
-#' @note map_entries since 2.4.0
-setMethod("map_entries",
-          signature(x = "Column"),
-          function(x) {
-            jc <- callJStatic("org.apache.spark.sql.functions", "map_entries", x@jc)
-            column(jc)
-         })
-
-#' @details
 #' \code{map_from_arrays}: Creates a new map column. The array in the first column is used for
 #' keys. The array in the second column is used for values. All elements in the array for key
 #' should not be null.
@@ -3350,11 +3337,11 @@ setMethod("size",
 
 #' @details
 #' \code{slice}: Returns an array containing all the elements in x from the index start
-#' (or starting from the end if start is negative) with the specified length.
+#' (array indices start at 1, or from the end if start is negative) with the specified length.
 #'
 #' @rdname column_collection_functions
-#' @param start an index indicating the first element occurring in the result.
-#' @param length a number of consecutive elements chosen to the result.
+#' @param start the starting index
+#' @param length the length of the slice
 #' @aliases slice slice,Column-method
 #' @note slice since 2.4.0
 setMethod("slice",
