@@ -19,12 +19,15 @@ package org.apache.spark.deploy.yarn
 
 import org.apache.hadoop.yarn.api.records.Resource
 import org.apache.hadoop.yarn.util.Records
-import org.scalatest.Matchers
+import org.scalatest.matchers.must.Matchers
+import org.scalatest.matchers.should.Matchers._
 
 import org.apache.spark.{SparkConf, SparkException, SparkFunSuite}
+import org.apache.spark.deploy.yarn.ResourceRequestHelper._
 import org.apache.spark.deploy.yarn.ResourceRequestTestHelper.ResourceInformation
 import org.apache.spark.deploy.yarn.config._
-import org.apache.spark.internal.config.{DRIVER_MEMORY, EXECUTOR_MEMORY}
+import org.apache.spark.internal.config.{DRIVER_CORES, DRIVER_MEMORY, EXECUTOR_CORES, EXECUTOR_MEMORY}
+import org.apache.spark.resource.ResourceUtils.AMOUNT
 
 class ResourceRequestHelperSuite extends SparkFunSuite with Matchers {
 
@@ -32,52 +35,18 @@ class ResourceRequestHelperSuite extends SparkFunSuite with Matchers {
   private val CUSTOM_RES_2 = "custom-resource-type-2"
   private val MEMORY = "memory"
   private val CORES = "cores"
-  private val NEW_CONFIG_EXECUTOR_MEMORY = YARN_EXECUTOR_RESOURCE_TYPES_PREFIX + MEMORY
-  private val NEW_CONFIG_EXECUTOR_CORES = YARN_EXECUTOR_RESOURCE_TYPES_PREFIX + CORES
-  private val NEW_CONFIG_AM_MEMORY = YARN_AM_RESOURCE_TYPES_PREFIX + MEMORY
-  private val NEW_CONFIG_AM_CORES = YARN_AM_RESOURCE_TYPES_PREFIX + CORES
-  private val NEW_CONFIG_DRIVER_MEMORY = YARN_DRIVER_RESOURCE_TYPES_PREFIX + MEMORY
-  private val NEW_CONFIG_DRIVER_CORES = YARN_DRIVER_RESOURCE_TYPES_PREFIX + CORES
-
-  test("resource request value does not match pattern") {
-    verifySetResourceRequestsException(List(CUSTOM_RES_1),
-      Map(CUSTOM_RES_1 -> "**@#"), CUSTOM_RES_1)
-  }
-
-  test("resource request just unit defined") {
-    verifySetResourceRequestsException(List(), Map(CUSTOM_RES_1 -> "m"), CUSTOM_RES_1)
-  }
-
-  test("resource request with null value should not be allowed") {
-    verifySetResourceRequestsException(List(), null, Map(CUSTOM_RES_1 -> "123"),
-      "requirement failed: Resource parameter should not be null!")
-  }
-
-  test("resource request with valid value and invalid unit") {
-    verifySetResourceRequestsException(List(CUSTOM_RES_1), createResource,
-      Map(CUSTOM_RES_1 -> "123ppp"), "")
-  }
-
-  test("resource request with valid value and without unit") {
-    verifySetResourceRequestsSuccessful(List(CUSTOM_RES_1), Map(CUSTOM_RES_1 -> "123"),
-      Map(CUSTOM_RES_1 -> ResourceInformation(CUSTOM_RES_1, 123, "")))
-  }
-
-  test("resource request with valid value and unit") {
-    verifySetResourceRequestsSuccessful(List(CUSTOM_RES_1), Map(CUSTOM_RES_1 -> "2g"),
-      Map(CUSTOM_RES_1 -> ResourceInformation(CUSTOM_RES_1, 2, "G")))
-  }
-
-  test("two resource requests with valid values and units") {
-    verifySetResourceRequestsSuccessful(List(CUSTOM_RES_1, CUSTOM_RES_2),
-      Map(CUSTOM_RES_1 -> "123m", CUSTOM_RES_2 -> "10G"),
-      Map(CUSTOM_RES_1 -> ResourceInformation(CUSTOM_RES_1, 123, "m"),
-        CUSTOM_RES_2 -> ResourceInformation(CUSTOM_RES_2, 10, "G")))
-  }
+  private val NEW_CONFIG_EXECUTOR_MEMORY =
+    s"${YARN_EXECUTOR_RESOURCE_TYPES_PREFIX}${MEMORY}.${AMOUNT}"
+  private val NEW_CONFIG_EXECUTOR_CORES =
+    s"${YARN_EXECUTOR_RESOURCE_TYPES_PREFIX}${CORES}.${AMOUNT}"
+  private val NEW_CONFIG_AM_MEMORY = s"${YARN_AM_RESOURCE_TYPES_PREFIX}${MEMORY}.${AMOUNT}"
+  private val NEW_CONFIG_AM_CORES = s"${YARN_AM_RESOURCE_TYPES_PREFIX}${CORES}.${AMOUNT}"
+  private val NEW_CONFIG_DRIVER_MEMORY = s"${YARN_DRIVER_RESOURCE_TYPES_PREFIX}${MEMORY}.${AMOUNT}"
+  private val NEW_CONFIG_DRIVER_CORES = s"${YARN_DRIVER_RESOURCE_TYPES_PREFIX}${CORES}.${AMOUNT}"
 
   test("empty SparkConf should be valid") {
     val sparkConf = new SparkConf()
-    ResourceRequestHelper.validateResources(sparkConf)
+    validateResources(sparkConf)
   }
 
   test("just normal resources are defined") {
@@ -86,64 +55,108 @@ class ResourceRequestHelperSuite extends SparkFunSuite with Matchers {
     sparkConf.set(DRIVER_CORES.key, "4")
     sparkConf.set(EXECUTOR_MEMORY.key, "4G")
     sparkConf.set(EXECUTOR_CORES.key, "2")
-    ResourceRequestHelper.validateResources(sparkConf)
+    validateResources(sparkConf)
   }
 
-  test("memory defined with new config for executor") {
+  test("get yarn resources from configs") {
     val sparkConf = new SparkConf()
-    sparkConf.set(NEW_CONFIG_EXECUTOR_MEMORY, "30G")
-    verifyValidateResourcesException(sparkConf, NEW_CONFIG_EXECUTOR_MEMORY)
+    val resources = Map(YARN_GPU_RESOURCE_CONFIG -> "2G",
+      YARN_FPGA_RESOURCE_CONFIG -> "3G", "custom" -> "4")
+    resources.foreach { case (name, value) =>
+      sparkConf.set(s"${YARN_EXECUTOR_RESOURCE_TYPES_PREFIX}${name}.${AMOUNT}", value)
+      sparkConf.set(s"${YARN_DRIVER_RESOURCE_TYPES_PREFIX}${name}.${AMOUNT}", value)
+      sparkConf.set(s"${YARN_AM_RESOURCE_TYPES_PREFIX}${name}.${AMOUNT}", value)
+    }
+    var parsedResources = getYarnResourcesAndAmounts(sparkConf, YARN_EXECUTOR_RESOURCE_TYPES_PREFIX)
+    assert(parsedResources === resources)
+    parsedResources = getYarnResourcesAndAmounts(sparkConf, YARN_DRIVER_RESOURCE_TYPES_PREFIX)
+    assert(parsedResources === resources)
+    parsedResources = getYarnResourcesAndAmounts(sparkConf, YARN_AM_RESOURCE_TYPES_PREFIX)
+    assert(parsedResources === resources)
   }
 
-  test("memory defined with new config for executor 2") {
+  test("get invalid yarn resources from configs") {
     val sparkConf = new SparkConf()
-    sparkConf.set(YARN_EXECUTOR_RESOURCE_TYPES_PREFIX + "memory-mb", "30G")
-    verifyValidateResourcesException(sparkConf, YARN_EXECUTOR_RESOURCE_TYPES_PREFIX + "memory-mb")
+
+    val missingAmountConfig = s"${YARN_EXECUTOR_RESOURCE_TYPES_PREFIX}missingAmount"
+    // missing .amount
+    sparkConf.set(missingAmountConfig, "2g")
+    var thrown = intercept[IllegalArgumentException] {
+      getYarnResourcesAndAmounts(sparkConf, YARN_EXECUTOR_RESOURCE_TYPES_PREFIX)
+    }
+    thrown.getMessage should include("Missing suffix for")
+
+    sparkConf.remove(missingAmountConfig)
+    sparkConf.set(s"${YARN_EXECUTOR_RESOURCE_TYPES_PREFIX}customResource.invalid", "2g")
+
+    thrown = intercept[IllegalArgumentException] {
+      getYarnResourcesAndAmounts(sparkConf, YARN_EXECUTOR_RESOURCE_TYPES_PREFIX)
+    }
+    thrown.getMessage should include("Unsupported suffix")
   }
 
-  test("memory defined with new config for executor 3") {
-    val sparkConf = new SparkConf()
-    sparkConf.set(YARN_EXECUTOR_RESOURCE_TYPES_PREFIX + "mb", "30G")
-    verifyValidateResourcesException(sparkConf, YARN_EXECUTOR_RESOURCE_TYPES_PREFIX + "mb")
+  Seq(
+    "value with unit" -> Seq(ResourceInformation(CUSTOM_RES_1, 2, "G")),
+    "value without unit" -> Seq(ResourceInformation(CUSTOM_RES_1, 123, "")),
+    "multiple resources" -> Seq(ResourceInformation(CUSTOM_RES_1, 123, "m"),
+      ResourceInformation(CUSTOM_RES_2, 10, "G"))
+  ).foreach { case (name, resources) =>
+    test(s"valid request: $name") {
+      assume(isYarnResourceTypesAvailable())
+      val resourceDefs = resources.map { r => r.name }
+      val requests = resources.map { r => (r.name, r.value.toString + r.unit) }.toMap
+
+      ResourceRequestTestHelper.initializeResourceTypes(resourceDefs)
+
+      val resource = createResource()
+      setResourceRequests(requests, resource)
+
+      resources.foreach { r =>
+        val requested = ResourceRequestTestHelper.getResourceInformationByName(resource, r.name)
+        assert(requested === r)
+      }
+    }
   }
 
-  test("cores defined with new config for executor") {
-    val sparkConf = new SparkConf()
-    sparkConf.set(NEW_CONFIG_EXECUTOR_CORES, "5")
-    verifyValidateResourcesException(sparkConf, NEW_CONFIG_EXECUTOR_CORES)
+  Seq(
+    ("value does not match pattern", CUSTOM_RES_1, "**@#"),
+    ("only unit defined", CUSTOM_RES_1, "m"),
+    ("invalid unit", CUSTOM_RES_1, "123ppp")
+  ).foreach { case (name, key, value) =>
+    test(s"invalid request: $name") {
+      assume(isYarnResourceTypesAvailable())
+      ResourceRequestTestHelper.initializeResourceTypes(Seq(key))
+
+      val resource = createResource()
+      val thrown = intercept[IllegalArgumentException] {
+        setResourceRequests(Map(key -> value), resource)
+      }
+      thrown.getMessage should include (key)
+    }
   }
 
-  test("cores defined with new config for executor 2") {
-    val sparkConf = new SparkConf()
-    sparkConf.set(YARN_EXECUTOR_RESOURCE_TYPES_PREFIX + "vcores", "5")
-    verifyValidateResourcesException(sparkConf, YARN_EXECUTOR_RESOURCE_TYPES_PREFIX + "vcores")
+  Seq(
+    NEW_CONFIG_EXECUTOR_MEMORY -> "30G",
+    s"${YARN_EXECUTOR_RESOURCE_TYPES_PREFIX}memory-mb.$AMOUNT" -> "30G",
+    s"${YARN_EXECUTOR_RESOURCE_TYPES_PREFIX}mb.$AMOUNT" -> "30G",
+    NEW_CONFIG_EXECUTOR_CORES -> "5",
+    s"${YARN_EXECUTOR_RESOURCE_TYPES_PREFIX}vcores.$AMOUNT" -> "5",
+    NEW_CONFIG_AM_MEMORY -> "1G",
+    NEW_CONFIG_DRIVER_MEMORY -> "1G",
+    NEW_CONFIG_AM_CORES -> "3",
+    NEW_CONFIG_DRIVER_CORES -> "1G"
+  ).foreach { case (key, value) =>
+    test(s"disallowed resource request: $key") {
+      assume(isYarnResourceTypesAvailable())
+      val conf = new SparkConf(false).set(key, value)
+      val thrown = intercept[SparkException] {
+        validateResources(conf)
+      }
+      thrown.getMessage should include (key)
+    }
   }
 
-  test("memory defined with new config, client mode") {
-    val sparkConf = new SparkConf()
-    sparkConf.set(NEW_CONFIG_AM_MEMORY, "1G")
-    verifyValidateResourcesException(sparkConf, NEW_CONFIG_AM_MEMORY)
-  }
-
-  test("memory defined with new config for driver, cluster mode") {
-    val sparkConf = new SparkConf()
-    sparkConf.set(NEW_CONFIG_DRIVER_MEMORY, "1G")
-    verifyValidateResourcesException(sparkConf, NEW_CONFIG_DRIVER_MEMORY)
-  }
-
-  test("cores defined with new config, client mode") {
-    val sparkConf = new SparkConf()
-    sparkConf.set(NEW_CONFIG_AM_CORES, "3")
-    verifyValidateResourcesException(sparkConf, NEW_CONFIG_AM_CORES)
-  }
-
-  test("cores defined with new config for driver, cluster mode") {
-    val sparkConf = new SparkConf()
-    sparkConf.set(NEW_CONFIG_DRIVER_CORES, "1G")
-    verifyValidateResourcesException(sparkConf, NEW_CONFIG_DRIVER_CORES)
-  }
-
-  test("various duplicated definitions") {
+  test("multiple disallowed resources in config") {
     val sparkConf = new SparkConf()
     sparkConf.set(DRIVER_MEMORY.key, "2G")
     sparkConf.set(DRIVER_CORES.key, "2")
@@ -155,58 +168,12 @@ class ResourceRequestHelperSuite extends SparkFunSuite with Matchers {
     sparkConf.set(NEW_CONFIG_DRIVER_MEMORY, "2G")
 
     val thrown = intercept[SparkException] {
-      ResourceRequestHelper.validateResources(sparkConf)
+      validateResources(sparkConf)
     }
     thrown.getMessage should (
       include(NEW_CONFIG_EXECUTOR_MEMORY) and
       include(NEW_CONFIG_AM_MEMORY) and
       include(NEW_CONFIG_DRIVER_MEMORY))
-  }
-
-  private def verifySetResourceRequestsSuccessful(
-      definedResourceTypes: List[String],
-      resourceRequests: Map[String, String],
-      expectedResources: Map[String, ResourceInformation]): Unit = {
-    assume(ResourceRequestHelper.isYarnResourceTypesAvailable())
-    ResourceRequestTestHelper.initializeResourceTypes(definedResourceTypes)
-
-    val resource = createResource()
-    ResourceRequestHelper.setResourceRequests(resourceRequests, resource)
-
-    expectedResources.foreach { case (name, ri) =>
-      val resourceInfo = ResourceRequestTestHelper.getResourceInformationByName(resource, name)
-      assert(resourceInfo === ri)
-    }
-  }
-
-  private def verifySetResourceRequestsException(
-      definedResourceTypes: List[String],
-      resourceRequests: Map[String, String],
-      message: String): Unit = {
-    val resource = createResource()
-    verifySetResourceRequestsException(definedResourceTypes, resource, resourceRequests, message)
-  }
-
-  private def verifySetResourceRequestsException(
-      definedResourceTypes: List[String],
-      resource: Resource,
-      resourceRequests: Map[String, String],
-      message: String) = {
-    assume(ResourceRequestHelper.isYarnResourceTypesAvailable())
-    ResourceRequestTestHelper.initializeResourceTypes(definedResourceTypes)
-    val thrown = intercept[IllegalArgumentException] {
-      ResourceRequestHelper.setResourceRequests(resourceRequests, resource)
-    }
-    if (!message.isEmpty) {
-      thrown.getMessage should include (message)
-    }
-  }
-
-  private def verifyValidateResourcesException(sparkConf: SparkConf, message: String) = {
-    val thrown = intercept[SparkException] {
-      ResourceRequestHelper.validateResources(sparkConf)
-    }
-    thrown.getMessage should include (message)
   }
 
   private def createResource(): Resource = {

@@ -21,8 +21,7 @@ import java.sql.{Connection, Date, Timestamp}
 
 import org.apache.commons.lang3.StringUtils
 
-import org.apache.spark.annotation.{DeveloperApi, InterfaceStability, Since}
-import org.apache.spark.sql.execution.datasources.jdbc.JDBCOptions
+import org.apache.spark.annotation.{DeveloperApi, Since}
 import org.apache.spark.sql.types._
 
 /**
@@ -34,7 +33,6 @@ import org.apache.spark.sql.types._
  *                     send a null value to the database.
  */
 @DeveloperApi
-@InterfaceStability.Evolving
 case class JdbcType(databaseTypeDefinition : String, jdbcNullType : Int)
 
 /**
@@ -57,7 +55,6 @@ case class JdbcType(databaseTypeDefinition : String, jdbcNullType : Int)
  * for the given Catalyst type.
  */
 @DeveloperApi
-@InterfaceStability.Evolving
 abstract class JdbcDialect extends Serializable {
   /**
    * Check if this dialect instance can handle a certain jdbc url.
@@ -183,6 +180,19 @@ abstract class JdbcDialect extends Serializable {
    * None: The behavior of TRUNCATE TABLE is unknown (default).
    */
   def isCascadingTruncateTable(): Option[Boolean] = None
+
+  /**
+   * Rename an existing table.
+   *
+   * TODO (SPARK-32382): Override this method in the dialects that don't support such syntax.
+   *
+   * @param oldTable The existing table.
+   * @param newTable New name of the table.
+   * @return The SQL statement to use for renaming the table.
+   */
+  def renameTable(oldTable: String, newTable: String): String = {
+    s"ALTER TABLE $oldTable RENAME TO $newTable"
+  }
 }
 
 /**
@@ -197,7 +207,6 @@ abstract class JdbcDialect extends Serializable {
  * sure to register your dialects first.
  */
 @DeveloperApi
-@InterfaceStability.Evolving
 object JdbcDialects {
 
   /**
